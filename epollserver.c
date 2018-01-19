@@ -333,6 +333,7 @@ int main(int argc, char **argv)
                             if(commit_c >= backups_num-1){
                                 f->do_data(client_fd, f->params, f->params_count, ht);
                                 prepare_c = commit_c = propose_step = start_paxos = 0;
+                                propose_id+=1;
                             }
                         }
                     }
