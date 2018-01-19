@@ -109,11 +109,7 @@ void paxos_deal(int connfd, char *params[], int params_count, struct hash_table 
     }else{
         commit = str_equal(params[0], "commit");
         char **real_params = malloc(sizeof(char) * 8 * 4);
-        printf("real info %s \n", params[3]);
         params_count = parse_io_stream_paxos(params[3], real_params);
-        printf("real info %s \n", real_params[0]);
-        printf("real info %s \n", real_params[1]);
-        printf("real info %s \n", real_params[2]);
         ret = str_equal(real_params[0], "set");
         if(ret==1){
             set_key_value(connfd, real_params, params_count, ht);
