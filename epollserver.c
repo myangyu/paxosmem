@@ -87,7 +87,6 @@ int main(int argc, char **argv)
 	struct epoll_event events[MAXEPOLLSIZE];
 	struct rlimit rt;
 	char buf_client[MAXLINE];
-	char *buf = malloc(sizeof(char) * MAXLINE);
 
     char *backups_ports = malloc(sizeof(char) * 30);
     sprintf(backups_ports, "%s", BACKUPS_PORTS);
@@ -342,6 +341,7 @@ int main(int argc, char **argv)
                 else if(0==in_list_int(connfd, backups_fd_r, backups_num-1)){
                     client_fd = connfd;
                     char propose[MAXLINE + 30];
+                    char *buf = malloc(sizeof(char) * MAXLINE);
                     int flag = read(connfd, buf, MAXLINE);//读取客户端socket流
                     if(flag <= 0){
                         continue;
@@ -383,7 +383,7 @@ int main(int argc, char **argv)
 
 
 int handle(int connfd, struct hash_table *ht, struct funcs *f) {
-	char buf[MAXLINE];
+	char *buf = malloc(sizeof(char) * MAXLINE);
 	int flag = read(connfd, buf, MAXLINE);//读取客户端socket流
 	if(flag <= 0){
 	    return 0;
