@@ -1,10 +1,3 @@
-/*************************************************************************
-    > File Name: dispatcher.c
-    > Author: ma6174
-    > Mail: ma6174@163.com 
-    > Created Time: 2017年12月15日 14时04分14秒 CST
- ************************************************************************/
-
 #include<stdio.h>
 #include "data/str.h"
 #include "config.h"
@@ -15,32 +8,6 @@
 
 #define STRING_MAX_SIZE  1000
 #define STRING_MOD  STRING_MAX_SIZE
-
-
-//void main(){
-//
-//    struct hash_table *ht;
-//    ht = malloc(sizeof(hash_table));
-//    long l = STRING_MAX_SIZE;
-//    ht->length = STRING_MAX_SIZE;
-//    ht->used = 0;
-//    struct string *nds = malloc(sizeof(string) * l);
-//    for(int i=0; i<l; i++){
-//        nds[i].key = NULL;
-//    }
-//    ht->node = nds;
-//    struct funcs *f = malloc(sizeof(funcs));
-//    char **params = malloc(sizeof(char) * 8 * 4);
-//    f->params = params;
-//
-//    for(int i=0; i< 10000; i++){
-//        int temp = rand();
-//        char *command = malloc(sizeof(char) * 50);
-//        sprintf(command, "set key%d %d",temp,temp);
-//        parse(command, f);
-//        f->do_data(f->params, f->params_count, ht);
-//    }
-//}
 
 
 void set_key_value(int connfd, char *params[], int params_count, struct hash_table *ht){
@@ -64,13 +31,6 @@ void del_key(int connfd, char *params[], int params_count, struct hash_table *ht
     int length = strlen(result);
     send(connfd, result, length, 0);
 };
-
-
-//void dispatcher(char info[], struct hash_table *ht, struct funcs *f){
-//
-//    parse(info, f);
-//    f->do_data(f->params, f->params_count, ht);
-//}
 
 
 int parse_io_stream(char info[], char **params){

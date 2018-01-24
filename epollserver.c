@@ -59,6 +59,12 @@ int client_fd = 0;
 int LEADER = 0;
 int handle(int connfd, struct hash_table *ht, struct funcs *f);
 int in_list_int(int num, int list[], int length);
+void connect_nodes(int kdpfd, int servPort, char **ports);
+void recv_sync(int connfd);
+int epoll_add(int kdpfd, int connfd, int *curfds, struct sockaddr_in *cliaddr);
+void commit_step(int *propose_step, int *prepare_c, int *commit_c,
+                    int *start_paxos, struct funcs *f, struct hash_table *ht);
+void prepare_step(int connfd, int *start_paxos, struct funcs *f, struct hash_table *ht);
 int setnonblocking(int sockfd)
 {
 	if (fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFD, 0)|O_NONBLOCK) == -1) {
@@ -66,11 +72,6 @@ int setnonblocking(int sockfd)
 	}
 	return 0;
 }
-
-//struct fmap{
-//    int fd;
-//    void (*fun)(int connfd);
-//}fmap;
 
 
 int main(int argc, char **argv)
@@ -80,13 +81,12 @@ int main(int argc, char **argv)
 	int  servPort = atoi(argv[1]);
 	int listenq = 1024;
 
-	int listenfd, connfd, kdpfd, nfds, n, nread, curfds, acceptCount = 0;
+	int listenfd, connfd, kdpfd, nfds, n, nread, curfds;
 	struct sockaddr_in servaddr, cliaddr;
 	socklen_t socklen = sizeof(struct sockaddr_in);
 	struct epoll_event ev;
 	struct epoll_event events[MAXEPOLLSIZE];
 	struct rlimit rt;
-	char buf_client[MAXLINE];
 
     char *backups_ports = malloc(sizeof(char) * 30);
     sprintf(backups_ports, "%s", BACKUPS_PORTS);
@@ -150,7 +150,6 @@ int main(int argc, char **argv)
 		fprintf(stderr, "epoll set insertion error: fd=%d\n", listenfd);
 		return -1;
 	}
-
     // 处理客户端请求事件
 	curfds = 100;
 	printf("epollserver startup,port %d, max connection is %d, backlog is %d\n", servPort, MAXEPOLLSIZE, listenq);
@@ -164,103 +163,26 @@ int main(int argc, char **argv)
 		}
 		//连接备份节点，将连接成功的fd加入epoll
         if(str_equal(status, "sync")){
-            if(connected_num < backups_num-1){
-                for(int i=0; i<backups_num; i++){
-                    int syn_node_port = atoi(ports[i]);
-                    int r = in_list_int(syn_node_port, connected_ports, backups_num);
-                    if(syn_node_port<=0 || servPort==syn_node_port || 1==in_list_int(syn_node_port, connected_ports, backups_num))
-                        continue;
-
-                    struct sockaddr_in sa;
-                    int SocketFD;
-                    SocketFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-                    if (-1 == SocketFD) {
-                        perror("cannot create socket");
-                        continue;
-                    }
-                    memset(&sa, 0, sizeof sa);
-                    sa.sin_family = AF_INET;
-                    sa.sin_port = htons(syn_node_port);
-                    inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
-                    if (-1 == connect(SocketFD, (struct sockaddr*)&sa, sizeof sa)) {
-                        perror("connect failed");
-                        close(SocketFD);
-                        sleep(1);
-                        continue;
-                    }
-
-                    ev.events = EPOLLIN | EPOLLET;
-                    ev.data.fd = SocketFD;
-                    if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, SocketFD, &ev) < 0)
-                        continue;
-                    backups_fd_w[fd_index_w] = SocketFD;
-                    send(SocketFD, "sync", 4, 0);
-                    fd_index_w += 1;
-                    connected_num += 1;
-                    connected_ports[connected_ports_index] = syn_node_port;
-                    connected_ports_index++;
-                    printf("connected %d socket port is %d, all connected %d\n", SocketFD, syn_node_port, connected_num);
-                }
-                sleep(2);
-            }
+            connect_nodes(kdpfd, servPort, ports);
         }
 		/* 处理所有事件 */
 		for (n = 0; n < nfds; n++)
 		{
             connfd = events[n].data.fd;
-		    //备份节点的同步
+		    //监听备份节点
 		    if(1==str_equal(status, "sync")){
 		        if (events[n].data.fd == listenfd){
                     connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &socklen);
-                    if (connfd < 0)
-                    {
-                        perror("accept error");
-                        continue;
+                    int ret = epoll_add(kdpfd, connfd, &curfds, &cliaddr);
+                    if(1==ret){
+                        curfds++;
+                        backups_fd_r[fd_index_r] = connfd;
+                        fd_index_r++;
                     }
-                    if (curfds >= MAXEPOLLSIZE) {
-                        fprintf(stderr, "too many connection, more than %d\n", MAXEPOLLSIZE);
-                        close(connfd);
-                        continue;
-                    }
-                    if (setnonblocking(connfd) < 0) {
-                        perror("setnonblocking error");
-                    }
-                    ev.events = EPOLLIN | EPOLLET;
-                    ev.data.fd = connfd;
-
-                    if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, connfd, &ev) < 0)
-                    {
-                        fprintf(stderr, "add socket '%d' to epoll failed: %s\n", connfd, strerror(errno));
-                        continue;
-                    }
-                    curfds++;
-                    backups_fd_r[fd_index_r] = connfd;
-                    fd_index_r++;
                     continue;
 		        }
-
-		        if(1==in_list_int(connfd, backups_fd_r, backups_num-1) && 0==in_list_int(connfd, backuped_fd, backups_num-1)){
-		            char buf[5];
-                    int flag = recv(connfd, buf, 4, 0);//读取客户端socket流
-                    if(flag==-1){
-                        continue;
-                    }
-                    if(flag <= 0){
-                        perror("recv error");
-                        continue;
-                    }
-                    buf[flag]=0x00;
-                    if(1==str_equal("sync", buf)){
-                        backuped_fd[backuped_num] = connfd;
-                        backuped_num += 1;
-                    }
-                    printf("recv info %s num %d\n", buf, backuped_num);
-		        }
-		        if(backuped_num == backups_num-1){
-
-		            status = "grab";
-		            printf("status %s \n", status);
-		        }
+//		        处理备份节点同步
+		        recv_sync(connfd);
 		    }
 //		     抢占leader todo paxos选举leader
 		    if(1==str_equal(status, "grab")){
@@ -280,91 +202,21 @@ int main(int argc, char **argv)
                 if (events[n].data.fd == listenfd)
                 {
                     connfd = accept(listenfd, (struct sockaddr *)&cliaddr,&socklen);
-                    if (connfd < 0)
-                    {
-                        perror("accept error");
-                        continue;
-                    }
-                    sprintf(buf_client, "accept form %s:%d\n", inet_ntoa(cliaddr.sin_addr), cliaddr.sin_port);
-                    printf("%d:%s", ++acceptCount, buf_client);
-
-                    if (curfds >= MAXEPOLLSIZE) {
-                        fprintf(stderr, "too many connection, more than %d\n", MAXEPOLLSIZE);
-                        close(connfd);
-                        continue;
-                    }
-                    if (setnonblocking(connfd) < 0) {
-                        perror("setnonblocking error");
-                    }
-                    ev.events = EPOLLIN | EPOLLET;
-                    ev.data.fd = connfd;
-                    if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, connfd, &ev) < 0)
-                    {
-                        fprintf(stderr, "add socket '%d' to epoll failed: %s\n", connfd, strerror(errno));
-                        continue;
-                    }
-                    curfds++;
+                    int ret = epoll_add(kdpfd, connfd, &curfds, &cliaddr);
+                    if(ret==1)
+                        curfds++;
                     continue;
                 }
 //              leader节点接受外部请求， 进行commit阶段 todo 非leader节点 负载读操作
-                else if(1==in_list_int(connfd, backups_fd_w, backups_num-1)){
+                if(1==in_list_int(connfd, backups_fd_w, backups_num-1)){
                     if(LEADER == 1){
-                        if(propose_step==0 && start_paxos==1){
-                            prepare_c += 1;
-                            if(prepare_c >= backups_num -1){
-                                char propose[MAXLINE + 30];
-                                int pc = f->params_count;
-                                sprintf(propose, "paxos %d commit ", propose_id);
-                                for(int i=0; i<pc; i++){
-                                    sprintf(propose, "%s%s", propose, f->params[i]);
-                                    if(i < pc-1)
-                                        sprintf(propose, "%s%s", propose, "_");
-                                }
-                                int length = strlen(propose);
-                                for(int i=0; i<connected_num; i++){
-                                    int fd = backups_fd_w[i];
-                                    int ret = send(fd, propose, length, 0);
-                                }
-                                propose_step=1;
-                            }
-                        }else if(propose_step==1){
-                            commit_c += 1;
-                            if(commit_c >= backups_num-1){
-                                f->do_data(client_fd, f->params, f->params_count, ht);
-                                prepare_c = commit_c = propose_step = start_paxos = 0;
-                                propose_id+=1;
-                            }
-                        }
+                        printf("commit step \n");
+                        commit_step(&propose_step, &prepare_c, &commit_c, &start_paxos, f, ht);
                     }
                 }
                 //leader节点接受外部请求， 进行prepare阶段提议
                 else if(0==in_list_int(connfd, backups_fd_r, backups_num-1)){
-                    client_fd = connfd;
-                    char propose[MAXLINE + 30];
-                    char *buf = malloc(sizeof(char) * MAXLINE);
-                    int flag = read(connfd, buf, MAXLINE);//读取客户端socket流
-                    if(flag <= 0){
-                        continue;
-                    }
-                    buf[flag]=0x00;
-                    parse(buf, f);
-                    int pc = f->params_count;
-                    sprintf(propose, "paxos %d prepare ", propose_id);
-                    for(int i=0; i<pc; i++){
-                        sprintf(propose, "%s%s", propose, f->params[i]);
-                        if(i < pc-1)
-                            sprintf(propose, "%s%s", propose, "_");
-                    }
-                    if(1==str_equal("get", f->params[0])){
-                        f->do_data(client_fd, f->params, f->params_count, ht);
-                        continue;
-                    }
-                    int length = strlen(propose);
-                    for(int i=0; i<connected_num; i++){
-                        int fd = backups_fd_w[i];
-                        int ret = send(fd, propose, length, 0);
-                    }
-                    start_paxos = 1;
+                    prepare_step(connfd, &start_paxos, f, ht);
                 }
                 // 非leader节点执行二阶段提交
                 else if(handle(events[n].data.fd, ht, f) < 0) {
@@ -401,4 +253,164 @@ int in_list_int(int num, int list[], int length){
             return 1;
     }
     return 0;
+}
+
+
+void connect_nodes(int kdpfd, int servPort, char **ports){
+
+    if(connected_num < backups_num-1){
+        for(int i=0; i< backups_num; i++){
+            int syn_node_port = atoi(ports[i]);
+            int r = in_list_int(syn_node_port, connected_ports, backups_num);
+            if(syn_node_port<=0 || servPort==syn_node_port || 1==in_list_int(syn_node_port, connected_ports, backups_num))
+                continue;
+
+            struct sockaddr_in sa;
+            struct epoll_event ev;
+            int SocketFD;
+
+            SocketFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (-1 == SocketFD) {
+                perror("cannot create socket");
+                continue;
+            }
+            memset(&sa, 0, sizeof sa);
+            sa.sin_family = AF_INET;
+            sa.sin_port = htons(syn_node_port);
+            inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+            if (-1 == connect(SocketFD, (struct sockaddr*)&sa, sizeof sa)) {
+                perror("connect failed");
+                close(SocketFD);
+                sleep(1);
+                continue;
+            }
+
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = SocketFD;
+            if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, SocketFD, &ev) < 0)
+                continue;
+            backups_fd_w[fd_index_w] = SocketFD;
+            send(SocketFD, "sync", 4, 0);
+            fd_index_w += 1;
+            connected_num += 1;
+            connected_ports[connected_ports_index] = syn_node_port;
+            connected_ports_index += 1;
+            printf("connected %d socket port is %d, all connected %d\n", SocketFD, syn_node_port, connected_num);
+        }
+        sleep(2);
+    }
+}
+
+void recv_sync(int connfd){
+
+    if(1==in_list_int(connfd, backups_fd_r, backups_num-1) && 0==in_list_int(connfd, backuped_fd, backups_num-1)){
+        char buf[5];
+        int flag = recv(connfd, buf, 4, 0);//读取客户端socket流
+        if(flag <= 0){
+            perror("recv error");
+        }else{
+            buf[flag]=0x00;
+            if(1==str_equal("sync", buf)){
+                backuped_fd[backuped_num] = connfd;
+                backuped_num += 1;
+            }
+            printf("recv info %s num %d\n", buf, backuped_num);
+        }
+    }
+    if(backuped_num == backups_num-1){
+
+        status = "grab";
+        printf("status %s \n", status);
+    }
+}
+
+int epoll_add(int kdpfd, int connfd, int *curfds, struct sockaddr_in *cliaddr){
+    if (connfd < 0)
+        {
+            perror("accept error");
+            return -1;
+        }
+        char buf_client[MAXLINE];
+        sprintf(buf_client, "accept form %s:%d\n", inet_ntoa(cliaddr->sin_addr), cliaddr->sin_port);
+        printf("%s", buf_client);
+
+        if (*curfds >= MAXEPOLLSIZE) {
+            fprintf(stderr, "too many connection, more than %d\n", MAXEPOLLSIZE);
+            close(connfd);
+            return -1;
+        }
+        if (setnonblocking(connfd) < 0) {
+            perror("setnonblocking error");
+        }
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLET;
+        ev.data.fd = connfd;
+        if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, connfd, &ev) < 0)
+        {
+            fprintf(stderr, "add socket '%d' to epoll failed: %s\n", connfd, strerror(errno));
+            return -1;
+        }
+        return 1;
+}
+
+void commit_step(int *propose_step, int *prepare_c, int *commit_c,
+                    int *start_paxos, struct funcs *f, struct hash_table *ht){
+    if(*propose_step==0 && *start_paxos==1){
+        *prepare_c += 1;
+        if(*prepare_c >= backups_num -1){
+            char propose[MAXLINE + 30];
+            int pc = f->params_count;
+            sprintf(propose, "paxos %d commit ", propose_id);
+            for(int i=0; i<pc; i++){
+                sprintf(propose, "%s%s", propose, f->params[i]);
+                if(i < pc-1)
+                    sprintf(propose, "%s%s", propose, "_");
+            }
+            int length = strlen(propose);
+            for(int i=0; i<connected_num; i++){
+                int fd = backups_fd_w[i];
+                int ret = send(fd, propose, length, 0);
+            }
+            *propose_step=1;
+        }
+    }else if(1==*propose_step){
+        *commit_c += 1;
+        if(*commit_c >= backups_num-1){
+            f->do_data(client_fd, f->params, f->params_count, ht);
+            *prepare_c = *commit_c = *propose_step = *start_paxos = 0;
+            propose_id+=1;
+        }
+    }
+}
+
+void prepare_step(int connfd, int *start_paxos, struct funcs *f, struct hash_table *ht){
+        client_fd = connfd;
+        char propose[MAXLINE + 30];
+        char *buf = malloc(sizeof(char) * MAXLINE);
+        int flag = read(connfd, buf, MAXLINE);//读取客户端socket流
+        if(flag <= 0){
+            perror("accept error");
+        }else{
+            buf[flag]=0x00;
+            parse(buf, f);
+            int pc = f->params_count;
+            sprintf(propose, "paxos %d prepare ", propose_id);
+            printf("aaa %s \n", propose);
+            for(int i=0; i<pc; i++){
+                sprintf(propose, "%s%s", propose, f->params[i]);
+                if(i < pc-1)
+                    sprintf(propose, "%s%s", propose, "_");
+            }
+            if(1==str_equal("get", f->params[0])){
+                f->do_data(connfd, f->params, f->params_count, ht);
+            }else{
+                int length = strlen(propose);
+                for(int i=0; i<connected_num; i++){
+                    int fd = backups_fd_w[i];
+                    int ret = send(fd, propose, length, 0);
+                    printf("aaa %s \n", propose);
+                }
+                *start_paxos = *start_paxos + 1;
+            }
+        }
 }
