@@ -10,16 +10,13 @@
 
 使用
     
-    1下载源码
-    2编译
-     gcc epollserver.c -o epoll ./dispatcher.c ./data/str.c -lcrypto -lssl -lm
-     默认支持三节点备份 端口分别为 12000 12001 12002
-     编译客户端
-     gcc client.c -o client
-    3分别启动服务
-    ./epoll 12000
-    ./epoll 12001
-    ./epoll 12002
+    1 下载源码
+    2 编译
+     make install
+    3 分别启动服务
+    ./server 12001 2 12000 12002
+    ./server 12002 3 12001 12000
+    ./server 12000 1 12001 12002
     4等待同步完成
     5客户端链接
      ./client
