@@ -63,9 +63,9 @@ struct Paxosinstance{
 // 存储node节点状态的hashtable
 struct hash_table *nodeHT;
 // 节点的个数
-int count_nodes = 2;
+int count_nodes = 3;
 // 已经链接的节点个数
-int count_connected_nodes=0;
+int count_connected_nodes=1;
 
 char **ports ;
 //承诺的propose_id 和propose
@@ -88,7 +88,7 @@ int main(int argc, char**argv) {
     char *backups_ports = malloc(sizeof(char) * 30);
     sprintf(backups_ports, "%s %s", argv[3], argv[4]);
     instance = malloc(sizeof(struct Paxosinstance));
-    new_paxos_instance(2);
+    new_paxos_instance(3);
     ports = malloc(sizeof(char) * 8 * 5);
     nodeHT = init_hash_table(3);
     //获取备份节点的端口
@@ -230,7 +230,9 @@ void socket_read_cb(int fd, short events, void*arg) {
         }
         // proposer role
         if(str_equal(info[0], "NULL") == 1){
-            deal_prepare_null_ack(fd, recieve_proposer_id, "NULL");
+            char *propose_value = malloc(sizeof(char) * 32);
+            sprintf(propose_value, "%s", info[0]);
+            deal_prepare_null_ack(fd, recieve_proposer_id, propose_value);
         }
         if(str_equal(info[0], "deny_p") == 1){
             deal_prepare_deny_p_ack(fd, recieve_proposer_id);
@@ -351,6 +353,34 @@ void graber_leader(int fd, short events, void* arg){
     sprintf(prepare_info, "prepare %d", propose_id);
     printf("promise_propose_id %d \n", promise_propose_id);
     for(int i=0; i<instance->counts_nodes; i++){
+        if(instance->nodes[i].id < 0){
+            //未收到prepare信息
+            if(promise_propose_id < 0){
+                max_recive_propose_id = propose_id;
+                if(str_equal(promise_propose, "NULL") == 1){
+                    promise_propose_id = propose_id;
+                }
+                sprintf(instance->nodes[i].propose, "%s", propose);
+                // 0表示可随意指定，即返回为NULL的情况
+                instance->nodes[i].propose_id = 0;
+            }
+            //请求propose_id 小于 已接受的
+            if(propose_id < promise_propose_id){
+                instance->nodes[i].deny_p = 1;
+                instance->nodes[i].propose_id = -1;
+            }
+            // 请求propose_id大于已接受的
+            if(propose_id > promise_propose_id){
+//                free(instance->nodes[i].propose);
+                sprintf(instance->nodes[i].propose, "%s", propose);
+                instance->nodes[i].propose_id = propose_id;
+                if(str_equal(promise_propose, "NULL") == 1){
+                    promise_propose_id = propose_id;
+                }
+                max_recive_propose_id = propose_id;
+            }
+            continue;
+        }
         printf("graber send info %s \n", prepare_info);
         struct event *ev = malloc(sizeof(struct event));
         event_set(ev, instance->nodes[i].fd, EV_READ | EV_PERSIST, socket_read_cb, ev);
@@ -376,10 +406,19 @@ struct hash_table* init_hash_table(long l){
 
 
 struct Paxosinstance* new_paxos_instance(int num){
-    instance->counts_nodes = num;
-    instance->uninit_node_index = 0;
+    instance->counts_nodes = num ;
+    instance->uninit_node_index = 1;
     struct Nodes *nodes = malloc(sizeof(struct Nodes) * num);
-    for(int i=0; i < num; i++){
+    nodes[0].id = -1;
+    nodes[0].fd = -1;
+    nodes[0].deny_c = -1;
+    nodes[0].deny_p = -1;
+    nodes[0].propose_id = -1;
+    nodes[0].propose = malloc(sizeof(char) * 32);
+    nodes[0].role = malloc(sizeof(char) * 16);
+    
+    
+    for(int i=1; i < num; i++){
         nodes[i].id = 0;
         nodes[i].fd = 0;
         nodes[i].deny_c = -1;
@@ -426,7 +465,7 @@ void deal_prepare_propose_ack(int fd, int proposer_id, int propose_id, char *pro
     init_node(fd, proposer_id);
     for(int i=0; i < instance->counts_nodes; i++){
         if(instance->nodes[i].id ==proposer_id){
-            free(instance->nodes[i].propose);
+//            free(instance->nodes[i].propose);
             instance->nodes[i].propose = propose;
             instance->nodes[i].propose_id = propose_id;
         }
@@ -475,7 +514,6 @@ void deal_prepare(){
     int deny_p = 0;
     char *max_propose_propose = NULL;
     for(int i=0; i < instance->counts_nodes; i++){
-        printf("deny %d proposer_id: %d propose_id:%d  propose:%s \n", instance->nodes[i].deny_p, instance->nodes[i].id, instance->nodes[i].propose_id, instance->nodes[i].propose);
         if(instance->nodes[i].deny_p == 1){
             deny_p += 1;
             continue;
@@ -484,17 +522,18 @@ void deal_prepare(){
         if(instance->nodes[i].propose_id == -1){
             return;
         }
-        if(instance->nodes[i].propose_id > max_propose_id && str_equal(instance->nodes[i].propose, "NULL") !=1){
+        if(instance->nodes[i].propose_id >= max_propose_id && str_equal(instance->nodes[i].propose, "NULL") !=1){
             max_propose_id = instance->nodes[i].propose_id;
             max_propose_propose = instance->nodes[i].propose;
         }
     }
+    
     if(max_propose_id <= 0){
         max_propose_id = propose_id;
         max_propose_propose = propose;
     }
     //有acceptor拒绝 或者全部返回拒绝
-    if(deny_p >= 1){
+    if(deny_p >= (instance->counts_nodes + 1) / 2){
         prepare_agin();
         return;
     }
@@ -502,24 +541,50 @@ void deal_prepare(){
     sprintf(info, "commit %d %s", propose_id, max_propose_propose);
     sprintf(propose, "%s", max_propose_propose);
     for(int i=0; i<instance->counts_nodes; i++){
-        printf("send info %s fd:%d \n", info, instance->nodes[i].fd);
-        send_info(instance->nodes[i].fd, info);
+        if(instance->nodes[i].deny_p != 1){
+            if(instance->nodes[i].id > 0){
+                printf("send info %s fd:%d \n", info, instance->nodes[i].fd);
+                send_info(instance->nodes[i].fd, info);
+            }
+            if(instance->nodes[i].id < 0){
+                // 被拒绝deny_c
+                if(promise_propose_id > propose_id){
+                    instance->nodes[i].propose_id = propose_id;
+                    instance->nodes[i].deny_c = 1;
+                }
+                //被接受accepted
+                else if(promise_propose_id <= propose_id){
+                    instance->nodes[i].propose_id = propose_id;
+                    instance->nodes[i].deny_c = 0;
+                    sprintf(instance->nodes[i].propose, "%s", propose);
+                    max_recive_propose_id = propose_id;
+                    promise_propose_id = propose_id;
+                    sprintf(promise_propose, "%s", propose);
+
+                }
+            }
+        }
     }
     sprintf(success_propose, "%s", max_propose_propose);
     instance->status = "c";
+    
 }
 
 
 int deal_commit(){
     int flag = 0;
     for(int i=0; i < instance->counts_nodes; i++){
-        if(instance->nodes[i].deny_c == -1){
-            flag = -1;
-            break;
+        if(instance->nodes[i].deny_p != 1){
+            if(instance->nodes[i].deny_c == -1){
+                flag = -1;
+                break;
+            }
+            if(instance->nodes[i].deny_c == 0){
+                flag += 1;
+            }
         }
-        if(instance->nodes[i].deny_c == 0){
-            flag += 1;
-        }
+        
+        
     }
     // 返回信息未全部收回
     if(flag < 0){
@@ -527,7 +592,7 @@ int deal_commit(){
     }
     
     //返回信息完全收回
-    if(flag >= (instance->counts_nodes/2 +1)){
+    if(flag >= ((instance->counts_nodes + 1)/2)){
         printf("\033[31m learning la la la la .... propose %s \033[0m \n", success_propose);
         instance->status = "l";
         broad_to_nodes();
@@ -537,7 +602,6 @@ int deal_commit(){
     }
     return 0;
 }
-
 
 void send_info(int fd, char *param_info){
     char info[strlen(param_info) + 1];
@@ -570,10 +634,11 @@ int init_node(int fd, int proposer_id){
 void prepare_agin(){
     instance->status = "p";
     for(int i=0; i < instance->counts_nodes; i++){
+        
         instance->nodes[i].deny_c = -1;
         instance->nodes[i].deny_p = -1;
         instance->nodes[i].propose_id = -1;
-        instance->nodes[i].propose = NULL;
+        strcpy(instance->nodes[i].propose, "NULL");
     }
     get_propose_id();
     char prepare_info[32];
@@ -581,6 +646,35 @@ void prepare_agin(){
     sprintf(prepare_info, "prepare %d", propose_id);
     printf("again prepare propose_id %d %s\n", propose_id, prepare_info);
     for(int i=0; i<instance->counts_nodes; i++){
+        if(instance->nodes[i].id < 0){
+            //未收到prepare信息
+            if(promise_propose_id < 0){
+                max_recive_propose_id = propose_id;
+                if(str_equal(promise_propose, "NULL") == 1){
+                    promise_propose_id = propose_id;
+                }
+                strcpy(instance->nodes[i].propose, "NULL");
+                // 0表示可随意指定，即返回为NULL的情况
+                instance->nodes[i].propose_id = 0;
+                continue;
+            }
+            //请求propose_id 小于 已接受的
+            if(propose_id < promise_propose_id){
+                instance->nodes[i].deny_p = 1;
+                instance->nodes[i].propose_id = -1;
+                continue;
+            }
+            // 请求propose_id大于已接受的
+            if(propose_id > promise_propose_id){
+                instance->nodes[i].propose_id = propose_id;
+                if(str_equal(promise_propose, "NULL") == 1){
+                    promise_propose_id = propose_id;
+                }
+                max_recive_propose_id = propose_id;
+                strcpy(instance->nodes[i].propose, promise_propose);
+                continue;
+            }
+        }
         send_info(instance->nodes[i].fd, prepare_info);
     }
 }
@@ -589,8 +683,12 @@ void broad_to_nodes(){
     char info[32] = "\0";
     sprintf(info, "learning %s", success_propose);
     for(int i=0; i < instance->counts_nodes; i++){
-        printf("send learning info: %s fd:%d \n", info, instance->nodes[i].fd);
-        send_info(instance->nodes[i].fd, info);
+        if(instance->nodes[i].id ==-1){
+            deal_nodes_role(success_propose);
+        }else{
+            printf("send learning info: %s fd:%d \n", info, instance->nodes[i].fd);
+            send_info(instance->nodes[i].fd, info);
+        }
     }
 }
 
