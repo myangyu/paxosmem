@@ -112,7 +112,6 @@ void init_hash(long length, struct hash_table *t){
 
 
 struct string inner_set(struct hash_table *ht, char **key, char **value){
-    printf("key %s mod: %s\n", *key, *value);
     char buf[33] ={'\0'};
 	long long r;
 	int mod;

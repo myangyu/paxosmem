@@ -92,6 +92,7 @@ int leader = -1;
 struct Paxosinstance *instance;
 #define STRING_MAX_SIZE 100;
 struct hash_table *ht;
+int client_fd = 0;
 
 int main(int argc, char**argv) {
     /* 初始化 hash_table funcs */
@@ -202,8 +203,10 @@ void socket_read_cb(int fd, short events, void*arg) {
         parse_io_stream(tempmsg[i], info, " ");
         if(recieve_proposer_id < 0){
             if(str_equal(info[0], "get") == 1){
-                
+                char *ret = get(&info[1], ht);
+                write(fd, ret, strlen(ret));
             }else if(leader >= 1){
+                client_fd = fd;
                 char info[32];
                 init_paxosinstance();
                 strcpy(propose, temp);
@@ -872,12 +875,25 @@ void deal_commit_value(char ** info){
         strcpy(key, info[1]);
         strcpy(value, info[2]);
         set(ht, &key, &value);
+        if(leader >= 1){
+            write(client_fd, "success", strlen("success"));
+        }
     }
     if(str_equal(info[0], "get")){
-        printf("get \n");
+        char *key = malloc(sizeof(char) * 16);
+        strcpy(key, info[1]);
+        char *ret = get(&key, ht);
+        if(leader >= 1){
+            write(client_fd, ret, strlen(ret));
+        }
     }
     if(str_equal(info[0], "del")){
-        printf("del \n");
+        char *key = malloc(sizeof(char) * 16);
+        strcpy(key, info[1]);
+        char *ret = del(&key, ht);
+        if(leader >= 1){
+            write(client_fd, ret, strlen(ret));
+        }
     }
 }
 

@@ -38,7 +38,6 @@ int main(int argc, char** argv)
         printf(">");
         gets(input);
         sprintf(send_info, "-1,%s", input);
-        printf("%s \n", send_info);
         int length = strlen(send_info);
         send(SocketFD, send_info, length, 0);
         readSize = recv(SocketFD, buffer, 512, 0);
