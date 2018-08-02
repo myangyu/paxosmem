@@ -283,7 +283,7 @@ void socket_read_cb(int fd, short events, void*arg) {
                 sprintf(promise_propose, "%s", info[2]);
                 printf("promise_propose %s \n", promise_propose);
                 send_info(fd, reply_msg);
-                deal_commit_value(&info[2], counts);
+                deal_commit_value(&info[2], counts-2);
                 printf("return %s \n", reply_msg);
             }
             printf("commit event end  promise_propose_id %d  propose %s \n", promise_propose_id, promise_propose);
