@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include "lib/str.h"
 #include <unistd.h>
+#include "lib/GetConfig.h"
 
 struct Nodes{
     int deny_p;
@@ -16,7 +17,9 @@ struct Nodes{
     char *propose;
     int propose_id;
     int id;
+    int sync_ack_times;
     char *role;
+    char *status;
 } Nodes;
 
 void socket_read_cb(int fd, short events, void*arg);
@@ -44,6 +47,11 @@ void prepare_agin(void);
 void broad_to_nodes(void);
 void deal_nodes_role(char *learning_propose);
 struct hash_table* init_hash_table(long l);
+void sync_nodes(int fd, short events, void* arg);
+void sync_nodes_ack(int proposer_id);
+void sleep_randint(int m);
+void deal_commit_value(char **info);
+void init_paxosinstance(void);
 //用于connect事件的，包含ev和connect链接的端口
 struct connect_event{
     int port;
@@ -63,7 +71,7 @@ struct Paxosinstance{
 // 存储node节点状态的hashtable
 struct hash_table *nodeHT;
 // 节点的个数
-int count_nodes = 3;
+int count_nodes = 4;
 // 已经链接的节点个数
 int count_connected_nodes=1;
 
@@ -74,7 +82,7 @@ char *promise_propose;
 int max_recive_propose_id=-1;
 //本节点的初始propose_id
 int propose_id;
-int propose_id_interval = 3;
+int propose_id_interval = 4;
 char *propose;
 // 被多数派接受的议题
 char *success_propose;
@@ -86,16 +94,20 @@ struct Paxosinstance *instance;
 
 int main(int argc, char**argv) {
     char *backups_ports = malloc(sizeof(char) * 30);
-    sprintf(backups_ports, "%s %s", argv[3], argv[4]);
+    char *path = malloc(sizeof(char) * 32);
+    strcpy(path, argv[1]);
+    propose_id = GetConfigFileIntValue("NODEINFO", "propose_id", 20, path);
+    servPort = GetConfigFileIntValue("NODEINFO", "servPort", 20, path);
+    GetConfigFileStringValue("NODEINFO", "backups_ports", "", backups_ports, 20, path);
     instance = malloc(sizeof(struct Paxosinstance));
-    new_paxos_instance(3);
+    new_paxos_instance(4);
     ports = malloc(sizeof(char) * 8 * 5);
-    nodeHT = init_hash_table(3);
+    nodeHT = init_hash_table(4);
     //获取备份节点的端口
     parse_io_stream(backups_ports, ports, " ");
     
-    servPort = atoi(argv[1]);
-    propose_id = atoi(argv[2]);
+    //    servPort = atoi(argv[1]);
+    //    propose_id = atoi(argv[2]);
     
     promise_propose = malloc(sizeof(char) * 24);
     propose = malloc(sizeof(char) * 24);
@@ -109,14 +121,14 @@ int main(int argc, char**argv) {
     }
     
     struct event_base *Base;
-
+    
     Base = event_init();
-
+    
     struct event *ev = malloc(sizeof(struct event));
     event_set(ev, listener, EV_READ | EV_PERSIST, accept_fd, ev);
     event_add(ev, NULL);
     //注册事件
-    for(int i=0; i<=1; i++){
+    for(int i=0; i<count_nodes-1; i++){
         struct event *timeout = malloc(sizeof(struct event));
         struct timeval *tv = malloc(sizeof(struct timeval));
         struct connect_event *ce = malloc(sizeof(connect_event));
@@ -171,6 +183,18 @@ void socket_read_cb(int fd, short events, void*arg) {
     int msg_count = parse_io_stream(tempmsg[1], tempmsg, "&");
     for(int i=0; i<msg_count; i++){
         char **info = malloc(sizeof(char) * 30 * 4);
+        if(recieve_proposer_id < 0){
+            char info[32];
+            strcpy(propose, tempmsg[i]);
+            leader = 2;
+            sprintf(info, "commit %d %s", propose_id, tempmsg[i]);
+            for(int i=0; i < instance->counts_nodes; i++){
+                if(instance->nodes[i].id > 0){
+                    send_info(instance->nodes[i].fd, info);
+                }
+            }
+            continue;
+        }
         parse_io_stream(tempmsg[i], info, " ");
         //处理prepare事件  accepotor role
         if(str_equal(info[0], "prepare") == 1){
@@ -223,6 +247,7 @@ void socket_read_cb(int fd, short events, void*arg) {
                 sprintf(promise_propose, "%s", info[2]);
                 printf("promise_propose %s \n", promise_propose);
                 send_info(fd, reply_msg);
+                deal_commit_value(info);
                 printf("return %s \n", reply_msg);
             }
             printf("commit event end  promise_propose_id %d  propose %s \n", promise_propose_id, promise_propose);
@@ -252,10 +277,18 @@ void socket_read_cb(int fd, short events, void*arg) {
         if(str_equal(info[0], "accepted") == 1){
             deal_commit_accepted_ack(recieve_proposer_id);
         }
-    
+        
         // learning去学习
         if(str_equal(info[0], "learning") == 1){
             deal_nodes_role(info[1]);
+        }
+        
+        // 同步事件
+        if(str_equal(info[0], "sync") == 1){
+            send_info(fd, "ack_sync");
+        }
+        if(str_equal(info[0], "ack_sync") == 1){
+            sync_nodes_ack(recieve_proposer_id);
         }
         free(info);
     }
@@ -342,6 +375,15 @@ void connect_nodes(int fd, short events, void*arg){
             tv->tv_usec = 100;
             //重新注册event
             event_add(timeout, tv);
+            
+            //定时同步事件
+//            struct timeval *sync_tv = malloc(sizeof(struct timeval));
+//            struct event *sync_timeout = malloc(sizeof(struct event));
+//            event_set(sync_timeout, -1, 0, sync_nodes, sync_timeout);
+//            evutil_timerclear(sync_tv);
+//            sync_tv->tv_sec = 3;
+//            event_add(sync_timeout, sync_tv);
+            //删除老事件
             event_del(ce->ev);
         }
     }
@@ -371,7 +413,7 @@ void graber_leader(int fd, short events, void* arg){
             }
             // 请求propose_id大于已接受的
             if(propose_id > promise_propose_id){
-//                free(instance->nodes[i].propose);
+                //                free(instance->nodes[i].propose);
                 sprintf(instance->nodes[i].propose, "%s", propose);
                 instance->nodes[i].propose_id = propose_id;
                 if(str_equal(promise_propose, "NULL") == 1){
@@ -416,8 +458,8 @@ struct Paxosinstance* new_paxos_instance(int num){
     nodes[0].propose_id = -1;
     nodes[0].propose = malloc(sizeof(char) * 32);
     nodes[0].role = malloc(sizeof(char) * 16);
-    
-    
+    nodes[0].status = malloc(sizeof(char) * 16);
+    strcpy(nodes[0].status, "valid");
     for(int i=1; i < num; i++){
         nodes[i].id = 0;
         nodes[i].fd = 0;
@@ -426,6 +468,9 @@ struct Paxosinstance* new_paxos_instance(int num){
         nodes[i].propose_id = -1;
         nodes[i].propose = malloc(sizeof(char) * 32);
         nodes[i].role = malloc(sizeof(char) * 16);
+        nodes[i].status = malloc(sizeof(char) * 16);
+        strcpy(nodes[i].status, "valid");
+        
     }
     instance->nodes = nodes;
     instance->commit_ack = malloc(sizeof(int));
@@ -465,7 +510,7 @@ void deal_prepare_propose_ack(int fd, int proposer_id, int propose_id, char *pro
     init_node(fd, proposer_id);
     for(int i=0; i < instance->counts_nodes; i++){
         if(instance->nodes[i].id ==proposer_id){
-//            free(instance->nodes[i].propose);
+            //            free(instance->nodes[i].propose);
             instance->nodes[i].propose = propose;
             instance->nodes[i].propose_id = propose_id;
         }
@@ -518,6 +563,10 @@ void deal_prepare(){
             deny_p += 1;
             continue;
         }
+        if(str_equal(instance->nodes[i].status, "invalid")==1){
+            deny_p += 1;
+            continue;
+        }
         //未全部返回直接return
         if(instance->nodes[i].propose_id == -1){
             return;
@@ -560,19 +609,31 @@ void deal_prepare(){
                     max_recive_propose_id = propose_id;
                     promise_propose_id = propose_id;
                     sprintf(promise_propose, "%s", propose);
-
+                    
                 }
             }
         }
     }
     sprintf(success_propose, "%s", max_propose_propose);
     instance->status = "c";
-    
 }
 
 
 int deal_commit(){
     int flag = 0;
+    if (leader == 2){
+        for(int i=0; i < instance->counts_nodes; i++){
+            if(instance->nodes[i].id > 0 && instance->nodes[i].deny_c == 0){
+                flag ++;
+            }
+        }
+        if(flag >= instance->counts_nodes - 1){
+            printf("..... %s \n", propose);
+        }else{
+            prepare_agin();
+        }
+        return 1;
+    }
     for(int i=0; i < instance->counts_nodes; i++){
         if(instance->nodes[i].deny_p != 1){
             if(instance->nodes[i].deny_c == -1){
@@ -583,20 +644,19 @@ int deal_commit(){
                 flag += 1;
             }
         }
-        
-        
     }
     // 返回信息未全部收回
     if(flag < 0){
         return 0;
     }
-    
     //返回信息完全收回
     if(flag >= ((instance->counts_nodes + 1)/2)){
-        printf("\033[31m learning la la la la .... propose %s \033[0m \n", success_propose);
-        instance->status = "l";
-        broad_to_nodes();
-        deal_nodes_role(success_propose);
+        if(str_equal(instance->status, "ready")!=1){
+            printf("\033[31m learning la la la la .... propose %s \033[0m \n", success_propose);
+            instance->status = "ready";
+            broad_to_nodes();
+            deal_nodes_role(success_propose);
+        }
     }else{
         prepare_agin();
     }
@@ -708,5 +768,77 @@ void deal_nodes_role(char *learning_propose){
     if(is_leader == 1){
         printf("I'm the leader \n");
         leader = 1;
+    }
+    init_paxosinstance();
+}
+
+
+void sync_nodes(int fd, short events, void* arg){
+    char sync_info[10] = "sync";
+    struct event *ev = arg;
+    int leader_dead = 0;
+    for(int i=0; i < instance->counts_nodes; i++){
+        if(instance->nodes[i].sync_ack_times>3){
+            instance->nodes[i].status = "invalid";
+            if(str_equal(instance->nodes[i].role, "leader")==1){
+                leader_dead = 1;
+                strcpy(instance->nodes[i].role, "invalid");
+            }
+            continue;
+        }
+        send_info(instance->nodes[i].fd, sync_info);
+        instance->nodes[i].sync_ack_times ++;
+    }
+    if(leader_dead == 1){
+        for(int i=0; i < instance->counts_nodes; i++){
+            strcpy(instance->nodes[i].propose, "NULL");
+        }
+        strcpy(promise_propose, "NULL");
+        prepare_agin();
+    }
+    struct timeval tv;
+    evutil_timerclear(&tv);
+    tv.tv_sec = 3;
+    //重新注册event
+    event_add(ev, &tv);
+}
+
+
+void sync_nodes_ack(int proposer_id){
+    for(int i=0; i < instance->counts_nodes; i++){
+        if(instance->nodes[i].id == proposer_id){
+            instance->nodes[i].sync_ack_times --;
+        }
+    }
+}
+
+
+void sleep_randint(int m){
+    int random_sec = rand() % m;
+    sleep(random_sec);
+}
+
+
+void deal_commit_value(char ** info){
+    if(str_equal(info[2], "set")){
+        printf("set \n");
+    }
+    if(str_equal(info[2], "get")){
+        printf("get \n");
+    }
+    if(str_equal(info[2], "del")){
+        printf("del \n");
+    }
+}
+
+
+void init_paxosinstance(){
+    strcpy(propose, "NULL");
+    strcpy(promise_propose, "NULL");
+    for(int i=0; i < instance->counts_nodes; i++){
+        instance->nodes[i].deny_c = -1;
+        instance->nodes[i].deny_p = -1;
+        instance->nodes[i].propose_id = -1;
+        strcpy(instance->nodes[i].propose, "NULL");
     }
 }

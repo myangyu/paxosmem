@@ -7,6 +7,8 @@
 
 //#include<iostream.h>
 //using namespace std;
+#ifndef str_h
+#define str_h
 
 
 struct string{
@@ -40,3 +42,4 @@ void rehash(struct hash_table *ht);
 struct string set(struct hash_table *ht, char **key, char **value);
 char *get(char **key, struct hash_table *ht);
 char *del(char **key, struct hash_table *ht);
+#endif /* paxosevent_h */

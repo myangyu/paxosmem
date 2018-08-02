@@ -10,6 +10,7 @@
 int main(int argc, char** argv)
 {
     struct sockaddr_in sa;
+    int port = atoi(argv[1]);
     int SocketFD = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
     if (-1 == SocketFD) {
@@ -19,7 +20,8 @@ int main(int argc, char** argv)
     memset(&sa, 0, sizeof sa);
 
     sa.sin_family = AF_INET;
-    sa.sin_port = htons(12000);
+    sa.sin_port = htons(port);
+    printf("%d \n", port);
     inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
 
     if (-1 == connect(SocketFD, (struct sockaddr*)&sa, sizeof sa)) {
@@ -29,13 +31,16 @@ int main(int argc, char** argv)
     }
     char buffer[512];
     char input[512];
+    char send_info[515];
     int totalRead = 0;
     for (;;) {
         int readSize = 0;
         printf(">");
         gets(input);
-        int length = strlen(input);
-        send(SocketFD, input, length, 0);
+        sprintf(send_info, "-1,%s", input);
+        printf("%s \n", send_info);
+        int length = strlen(send_info);
+        send(SocketFD, send_info, length, 0);
         readSize = recv(SocketFD, buffer, 512, 0);
         if(readSize > 0){
             buffer[readSize] = 0x00;

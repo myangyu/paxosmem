@@ -14,9 +14,9 @@
     2 编译
      make install
     3 分别启动服务
-    ./server 12001 2 12000 12002
-    ./server 12002 3 12001 12000
-    ./server 12000 1 12001 12002
+     ./server conf/Config1.ini
+     ./server conf/Config2.ini
+     ./server conf/Config3.ini
     4等待同步完成
     5客户端链接
      ./client
