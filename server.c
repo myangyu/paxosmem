@@ -50,8 +50,9 @@ struct hash_table* init_hash_table(long l);
 void sync_nodes(int fd, short events, void* arg);
 void sync_nodes_ack(int proposer_id);
 void sleep_randint(int m);
-void deal_commit_value(char **info);
+void deal_commit_value(char **info, int counts);
 void init_paxosinstance(void);
+void transfer_to_leader(char *info);
 //用于connect事件的，包含ev和connect链接的端口
 struct connect_event{
     int port;
@@ -200,24 +201,33 @@ void socket_read_cb(int fd, short events, void*arg) {
     for(int i=0; i<msg_count; i++){
         char **info = malloc(sizeof(char) * 30 * 4);
         strcpy(temp, tempmsg[i]);
-        parse_io_stream(tempmsg[i], info, " ");
+        int counts = parse_io_stream(tempmsg[i], info, " ");
         if(recieve_proposer_id < 0){
             if(str_equal(info[0], "get") == 1){
                 char *ret = get(&info[1], ht);
                 write(fd, ret, strlen(ret));
-            }else if(leader >= 1){
+                continue;
+            }
+            if(str_equal(info[0], "del")!=1 && str_equal(info[0], "set")!=1){
+                write(fd, "invalid input", strlen("invalid input"));
+                continue;
+            }
+            if(leader >= 1){
                 client_fd = fd;
                 char info[32];
                 init_paxosinstance();
                 strcpy(propose, temp);
                 leader = 2;
                 sprintf(info, "commit %d %s", propose_id, temp);
-                printf("commit ... %s \n", info);
                 for(int i=0; i < instance->counts_nodes; i++){
                     if(instance->nodes[i].id > 0){
                         send_info(instance->nodes[i].fd, info);
                     }
                 }
+            }else if(leader <=0){
+                char ret[32] = "please connect leader";
+                write(fd, ret, strlen(ret));
+//                transfer_to_leader(temp);
             }
             continue;
         }
@@ -273,7 +283,7 @@ void socket_read_cb(int fd, short events, void*arg) {
                 sprintf(promise_propose, "%s", info[2]);
                 printf("promise_propose %s \n", promise_propose);
                 send_info(fd, reply_msg);
-                deal_commit_value(&info[2]);
+                deal_commit_value(&info[2], counts);
                 printf("return %s \n", reply_msg);
             }
             printf("commit event end  promise_propose_id %d  propose %s \n", promise_propose_id, promise_propose);
@@ -676,8 +686,8 @@ int deal_commit(){
         }
         if(flag >= instance->counts_nodes - 1){
             char **info = malloc(sizeof(char) * 32 * 5);
-            parse_io_stream(propose, info, " ");
-            deal_commit_value(info);
+            int counts = parse_io_stream(propose, info, " ");
+            deal_commit_value(info, counts);
         }else{
             prepare_agin();
         }
@@ -868,8 +878,12 @@ void sleep_randint(int m){
 }
 
 
-void deal_commit_value(char ** info){
+void deal_commit_value(char ** info, int counts){
     if(str_equal(info[0], "set")){
+        if(counts != 3){
+            write(client_fd, "invalid input", strlen("invalid input"));
+            return;
+        }
         char *key = malloc(sizeof(char) * 16);
         char *value = malloc(sizeof(char) * 16);
         strcpy(key, info[1]);
@@ -880,6 +894,10 @@ void deal_commit_value(char ** info){
         }
     }
     if(str_equal(info[0], "get")){
+        if(counts != 2){
+            write(client_fd, "invalid input", strlen("invalid input"));
+            return;
+        }
         char *key = malloc(sizeof(char) * 16);
         strcpy(key, info[1]);
         char *ret = get(&key, ht);
@@ -888,6 +906,10 @@ void deal_commit_value(char ** info){
         }
     }
     if(str_equal(info[0], "del")){
+        if(counts != 2){
+            write(client_fd, "invalid input", strlen("invalid input"));
+            return;
+        }
         char *key = malloc(sizeof(char) * 16);
         strcpy(key, info[1]);
         char *ret = del(&key, ht);
@@ -904,5 +926,16 @@ void init_paxosinstance(){
         instance->nodes[i].deny_p = -1;
         instance->nodes[i].propose_id = -1;
         strcpy(instance->nodes[i].propose, "NULL");
+    }
+}
+
+void transfer_to_leader(char *info){
+    for(int i=0; i < instance->counts_nodes; i++){
+        if(str_equal(instance->nodes[i].role, "leader")==1){
+            char transfer_info[32];
+            sprintf(transfer_info, "-1,%s", info);
+            write(instance->nodes[i].fd, transfer_info, strlen(transfer_info));
+            break;
+        }
     }
 }
