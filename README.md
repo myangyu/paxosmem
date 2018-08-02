@@ -17,11 +17,14 @@
      ./server conf/Config1.ini
      ./server conf/Config2.ini
      ./server conf/Config3.ini
+     ./server conf/Config4.ini
     4等待同步完成
     5客户端链接
-     ./client
+     ./client port
     6执行操作
      set 【key】 【value】
+     get 【key】
+     del 【key】
      
 支持类型
     字符串
